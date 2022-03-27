@@ -1,0 +1,52 @@
+#! /bin/bash
+
+# shellcheck source=../scripts/helpers/index.sh
+source /usr/local/bin/helpers/index.sh
+
+# suppress error output, e.g. when listmailuser runs in a fresh container (DMS not running)
+# shellcheck source=/dev/null
+source /etc/dms-settings 2>/dev/null
+
+function dovecot_quota_to_hr
+{
+  if [[ ${1:-} == "-" ]]
+  then
+    echo "~"
+  elif [[ ${1:-} =~ ^[0-9]+$ ]]
+  then
+    echo $(( 1024 * ${1} )) | numfmt --to=iec
+  else
+    _exit_with_error "Supplied non-number argument '${1:-}' to 'dovecot_quota_to_hr()' in script 'listmailuser'"
+  fi
+}
+
+DATABASE='/tmp/docker-mailserver/postfix-accounts.cf'
+ALIASES='/tmp/docker-mailserver/postfix-virtual.cf'
+
+[[ -f ${DATABASE} ]] || _exit_with_error "No 'postfix-accounts.cf' file"
+[[ -s ${DATABASE} ]] || _exit_with_error "Empty 'postfix-accounts.cf' - no accounts have been added"
+
+while read -r LINE
+do
+  USER=$(echo "${LINE}" | cut -d'|' -f1)
+
+  if [[ ${ENABLE_QUOTAS} -eq 1 ]]
+  then
+    # ${QUOTA[0]} => current size
+    # ${QUOTA[1]} => configured size limit
+    # ${QUOTA[2]} => usage in percent
+    IFS=' ' read -r -a QUOTA <<< "$(doveadm quota get -u "${USER}" | tail +2 | awk '{ if ($3 == "STORAGE") { print $4" "$5" "$6 } }')"
+    echo "* ${USER} ( $(dovecot_quota_to_hr "${QUOTA[0]}") / $(dovecot_quota_to_hr "${QUOTA[1]}") ) [${QUOTA[2]}%]"
+  else
+    echo "* ${USER}"
+  fi
+
+  if [[ -f ${ALIASES} ]] && grep -q "${USER}" "${ALIASES}"
+  then
+    echo -e "    [ aliases -> $(grep "${USER}" "${ALIASES}" | awk '{print $1;}' | sed ':a;N;$!ba;s/\n/, /g')]\n"
+  else
+    echo
+  fi
+done < "${DATABASE}"
+
+exit 0
